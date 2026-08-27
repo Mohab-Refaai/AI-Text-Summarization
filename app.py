@@ -54,16 +54,28 @@ with st.sidebar:
 # ---------------------------------------------------------------------
 # Main input area
 # ---------------------------------------------------------------------
+if "text_input" not in st.session_state:
+    st.session_state.text_input = ""
+
+
+def clear_all():
+    """Reset the text box so the user can paste a new text."""
+    st.session_state.text_input = ""
+
+
 text_input = st.text_area(
     "Paste your text here",
     height=220,
     placeholder="Paste a long article, report, or document...",
+    key="text_input",
 )
 
-col1, col2 = st.columns([1, 3])
+col1, col2, col3 = st.columns([1, 1, 2])
 with col1:
     run_button = st.button("Compare all models", type="primary", use_container_width=True)
 with col2:
+    st.button("🗑️ Clear", use_container_width=True, on_click=clear_all)
+with col3:
     word_count = len(text_input.split()) if text_input else 0
     st.caption(f"{word_count} words in input")
 
