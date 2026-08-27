@@ -21,18 +21,55 @@ from __future__ import annotations
 
 from preprocessing import preprocess
 
-# Cache loaded pipelines so repeated calls (e.g. from the Streamlit
-# app) don't reload the model from disk every time.
-_PIPELINE_CACHE: dict[str, object] = {}
+# Cache loaded (tokenizer, model) pairs so repeated calls (e.g. from
+# the Streamlit app) don't reload from disk every time.
+#
+# NOTE: we deliberately do NOT use transformers.pipeline("summarization",...)
+# here. On some transformers versions/environments (seen on Streamlit
+# Cloud) the "summarization" task string is missing from the pipeline
+# task registry, which raises "Unknown task summarization". Loading
+# the model/tokenizer directly and calling .generate() ourselves
+# avoids that registry entirely and works the same everywhere.
+_MODEL_CACHE: dict[str, tuple] = {}
 
 
-def _get_pipeline(model_name: str):
-    if model_name not in _PIPELINE_CACHE:
-        from transformers import pipeline
-        _PIPELINE_CACHE[model_name] = pipeline(
-            "summarization", model=model_name
+def _get_model_and_tokenizer(model_name: str):
+    if model_name not in _MODEL_CACHE:
+        from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+        model.eval()
+        _MODEL_CACHE[model_name] = (tokenizer, model)
+    return _MODEL_CACHE[model_name]
+
+
+def _generate_summary(
+    chunk: str, model_name: str, max_length: int, min_length: int
+) -> str:
+    import torch
+
+    tokenizer, model = _get_model_and_tokenizer(model_name)
+
+    # T5 checkpoints require an explicit task prefix; BART does not.
+    prefix = "summarize: " if model_name.startswith("t5") else ""
+
+    inputs = tokenizer(
+        prefix + chunk,
+        return_tensors="pt",
+        truncation=True,
+        max_length=1024,
+    )
+    with torch.no_grad():
+        output_ids = model.generate(
+            **inputs,
+            max_length=max_length,
+            min_length=min_length,
+            num_beams=4,
+            length_penalty=2.0,
+            no_repeat_ngram_size=3,
+            early_stopping=True,
         )
-    return _PIPELINE_CACHE[model_name]
+    return tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
 
 
 def _chunk_text_by_sentences(
@@ -75,7 +112,6 @@ def _summarize_long_text(
         return ""
 
     chunks = _chunk_text_by_sentences(sentences, max_words_per_chunk)
-    summarizer = _get_pipeline(model_name)
 
     partial_summaries = []
     for chunk in chunks:
@@ -83,13 +119,10 @@ def _summarize_long_text(
         # Don't ask for a summary longer than the chunk itself
         effective_max = min(max_length, max(20, chunk_word_count // 2))
         effective_min = min(min_length, max(10, effective_max - 10))
-        result = summarizer(
-            chunk,
-            max_length=effective_max,
-            min_length=effective_min,
-            do_sample=False,
+        summary = _generate_summary(
+            chunk, model_name, max_length=effective_max, min_length=effective_min
         )
-        partial_summaries.append(result[0]["summary_text"].strip())
+        partial_summaries.append(summary)
 
     combined = " ".join(partial_summaries)
 
@@ -98,13 +131,9 @@ def _summarize_long_text(
     if len(chunks) > 1:
         combined_word_count = len(combined.split())
         if combined_word_count > max_length:
-            final = summarizer(
-                combined,
-                max_length=max_length,
-                min_length=min_length,
-                do_sample=False,
+            combined = _generate_summary(
+                combined, model_name, max_length=max_length, min_length=min_length
             )
-            combined = final[0]["summary_text"].strip()
 
     return combined
 
