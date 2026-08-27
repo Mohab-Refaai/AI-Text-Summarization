@@ -1,0 +1,8 @@
+streamlit>=1.32
+scikit-learn>=1.4
+sentence-transformers>=2.6
+networkx>=3.2
+transformers>=4.39
+torch>=2.2
+rouge-score>=0.1.2
+nltk>=3.8
